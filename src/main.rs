@@ -4,6 +4,8 @@ mod errors;
 mod blockchain;
 mod cli;
 mod transaction;
+mod tx;
+mod wallet;
 
 use crate::errors::Result;
 

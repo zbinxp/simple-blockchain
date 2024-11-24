@@ -1,8 +1,9 @@
-
+use bitcoincash_addr::Address;
 use crate::blockchain::Blockchain;
 use crate::errors::Result;
 use clap::{arg, Command};
 use crate::transaction::Transaction;
+use crate::wallet::WalletManager;
 
 pub struct Cli {
 
@@ -29,6 +30,8 @@ impl Cli {
                 .arg(arg!(<FROM>"'the address to send the transaction from'").required(true))
                 .arg(arg!(<TO>"'the address to send the transaction to'").required(true))
                 .arg(arg!(<AMOUNT>"'the amount of the transaction'").required(true)))
+            .subcommand(Command::new("createwallet").about("create wallet"))
+            .subcommand(Command::new("listaddresses").about("list addresses of the wallet"))
             .get_matches();
 
         if let Some(_) = matches.subcommand_matches("printchain") {
@@ -53,14 +56,26 @@ impl Cli {
         }
         if let Some(matches) = matches.subcommand_matches("getbalance") {
             if let Some(addr) = matches.get_one::<String>("ADDRESS") {
-                let addr = String::from(addr);
+                let pub_key_hash = Address::decode(addr).unwrap().body;
                 let bc = Blockchain::new()?;
-                let utxos = bc.find_utxo(&addr);
+                let utxos = bc.find_utxo(&pub_key_hash);
                 let balance:i32 = utxos.iter()
                     .map(|item| item.get_value())
                     .sum();
                 println!("UTXO {} balance is {}", addr, balance);
             }
+        }
+
+        if let Some(_) = matches.subcommand_matches("createwallet") {
+            let mut wm = WalletManager::new()?;
+            let address = wm.new_wallet();
+            wm.save_all()?;
+            println!("Created wallet at {}", address);
+        }
+        if let Some(_) = matches.subcommand_matches("listaddresses") {
+            let wm = WalletManager::new()?;
+            let addresses = wm.get_all_addresses();
+            println!("Addresses {:?}", addresses);
         }
         Ok(())
     }

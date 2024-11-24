@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use log::{info};
 use crate::block::Block;
 use crate::errors::Result;
-use crate::transaction::{Transaction, TxOutput};
+use crate::transaction::{Transaction};
+use crate::tx::TxOutput;
 
 #[derive(Debug)]
 pub struct Blockchain {
@@ -48,15 +49,18 @@ impl Blockchain {
         Ok(())
     }
 
-    pub fn find_utxo(&self, address:&str) -> Vec<TxOutput> {
+    pub fn find_utxo(&self, address:&[u8]) -> Vec<TxOutput> {
         // store id+index of all spent txoutput
-        let mut spent_ids = HashSet::<String>::new();
+        let mut spent_ids = HashMap::<String,Vec<i32>>::new();
         let mut utxos = Vec::<TxOutput>::new();
         for block in self.iter() {
             for transaction in block.get_transactions() {
                 for (idx,tout) in transaction.vout.iter().enumerate() {
-                    if tout.can_be_unlock_with(address)
-                        && !spent_ids.contains(format!("{}+{}", transaction.id,idx).as_str()) {
+                    if !tout.can_be_unlock_with(address) {
+                        continue;
+                    }
+                    if !spent_ids.contains_key(&transaction.id)
+                        || !spent_ids[&transaction.id].contains(&(idx as i32)) {
                         utxos.push(tout.clone());
                     }
                 }
@@ -65,17 +69,18 @@ impl Blockchain {
                     continue;
                 }
                 for tin in &transaction.vin {
-                    if tin.can_be_unlock_output_with(address) {
-                        spent_ids.insert(format!("{}+{}",tin.txid, tin.vout));
+                    match spent_ids.get_mut(&tin.txid) {
+                        Some(ids) => ids.push(tin.vout),
+                        None => { spent_ids.insert(tin.txid.clone(),vec![tin.vout]); }
                     }
                 }
             }
         }
-
+        dbg!(&spent_ids);
         utxos
     }
 
-    pub fn find_spendable_outputs(&self, address:&str, amount:i32) -> (i32,HashMap<String, Vec<i32>>) {
+    pub fn find_spendable_outputs(&self, address:&[u8], amount:i32) -> (i32,HashMap<String, Vec<i32>>) {
         let mut accum = 0;
         let mut spent_map = HashMap::<String,Vec<i32>>::new();
         let mut utxos = HashMap::<String,Vec<i32>>::new();
@@ -118,6 +123,30 @@ impl Blockchain {
             chain: &self,
             current_hash: self.current_hash.clone(),
         }
+    }
+
+    pub fn sign_transaction(&self, tx: &mut Transaction, private_key: &[u8]) ->Result<()> {
+        let prev_txs = self.get_prev_txs(tx)?;
+        tx.sign(private_key, prev_txs)?;
+        Ok(())
+    }
+
+    pub fn verify_transaction(&self, tx: &Transaction) -> Result<bool> {
+        let prev_txs = self.get_prev_txs(tx)?;
+        tx.verify(prev_txs)
+    }
+
+    fn get_prev_txs(&self, tx: &Transaction) -> Result<HashMap<String,Transaction>> {
+        let mut txs = HashMap::<String,Transaction>::new();
+        let ids: HashSet<String> = tx.vin.iter().map(|vin| vin.txid.clone()).collect();
+        for block in self.iter() {
+            for transaction in block.get_transactions() {
+                if ids.contains(&transaction.id) {
+                    txs.insert(transaction.id.clone(), transaction.clone());
+                }
+            }
+        }
+        Ok(txs)
     }
 }
 
