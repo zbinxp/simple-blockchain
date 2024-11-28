@@ -1,7 +1,11 @@
 use bitcoincash_addr::Address;
 use serde::{Deserialize, Serialize};
 use crate::errors::Result;
-use crate::wallet::Wallet;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TxOutputs {
+    pub outputs: Vec<TxOutput>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TxInput {
@@ -12,11 +16,11 @@ pub struct TxInput {
 }
 
 impl TxInput {
-    pub fn can_be_unlock_output_with(&self, unlock_data: &[u8]) -> bool {
-        let mut pub_key = self.pub_key.clone();
-        Wallet::hash_pub_key(&mut pub_key);
-        self.pub_key == unlock_data
-    }
+    // pub fn can_be_unlock_output_with(&self, unlock_data: &[u8]) -> bool {
+    //     let mut pub_key = self.pub_key.clone();
+    //     Wallet::hash_pub_key(&mut pub_key);
+    //     self.pub_key == unlock_data
+    // }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -1,17 +1,16 @@
 use std::collections::HashMap;
 use crypto::digest::Digest;
 use crypto::ed25519;
-use crypto::ripemd160::Ripemd160;
 use crypto::sha2::Sha256;
 use failure::format_err;
 use log::error;
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use crate::blockchain::Blockchain;
 use crate::errors::Result;
 use crate::tx::{TxInput, TxOutput};
-use crate::wallet::{Wallet, WalletManager};
+use crate::utxoset::UTXOSet;
+use crate::wallet::{Wallet};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transaction {
@@ -45,16 +44,11 @@ impl Transaction {
         Ok(transaction)
     }
 
-    pub fn new_utxo(from:&str, amount:i32, to:&str, bc:&Blockchain) -> Result<Transaction> {
-        let wm = WalletManager::new()?;
-        let wallet = match wm.get_wallet(from) {
-            Some(w) => w,
-            None => return Err(format_err!("Wallet not found"))
-        };
-        let mut pub_key_hash = wallet.public_key.clone();
+    pub fn new_utxo(from:&Wallet, amount:i32, to:&Wallet, utxo_set:&UTXOSet) -> Result<Transaction> {
+        let mut pub_key_hash = from.public_key.clone();
         Wallet::hash_pub_key(&mut pub_key_hash);
 
-        let (accum,utxos) = bc.find_spendable_outputs(&pub_key_hash, amount);
+        let (accum,utxos) = utxo_set.find_spendable_outputs(&pub_key_hash, amount)?;
         if accum < amount {
             error!("can't fulfill the transaction");
             return Err(format_err!("not enough outputs to fulfill transaction, spentable:{accum} < {amount}"));
@@ -67,15 +61,15 @@ impl Transaction {
                     txid: txid.clone(),
                     vout: out,
                     signature: Vec::new(),
-                    pub_key: wallet.public_key.clone(),
+                    pub_key: from.public_key.clone(),
                 };
                 vin.push(input);
             }
         }
         let mut vout = Vec::new();
-        vout.push(TxOutput::new(amount, to.to_string())?);
+        vout.push(TxOutput::new(amount, to.get_address())?);
         if accum > amount {
-           vout.push(TxOutput::new(accum - amount, wallet.get_address())?);
+           vout.push(TxOutput::new(accum - amount, from.get_address())?);
         }
         let mut tx = Transaction{
             id: String::new(),
@@ -83,11 +77,11 @@ impl Transaction {
             vout
         };
         tx.id = tx.hash()?;
-        bc.sign_transaction(&mut tx, &wallet.private_key)?;
+        utxo_set.blockchain.sign_transaction(&mut tx, &from.private_key)?;
         Ok(tx)
     }
 
-    fn hash(&self) -> Result<String> {
+    pub fn hash(&self) -> Result<String> {
         let mut hasher = Sha256::new();
         hasher.input(&bincode::serialize(&self)?);
         Ok(hasher.result_str())

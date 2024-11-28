@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use failure::format_err;
 use log::{info};
 use crate::block::Block;
 use crate::errors::Result;
 use crate::transaction::{Transaction};
-use crate::tx::TxOutput;
+use crate::tx::{TxOutputs};
 
 #[derive(Debug)]
 pub struct Blockchain {
@@ -26,6 +27,11 @@ impl Blockchain {
 
     pub fn create_blockchain(address: String) -> Result<Blockchain> {
         info!("Creating new blockchain at address {}", address);
+        let path = "data/blocks";
+        if let Err(_e) = std::fs::remove_dir_all(path) {
+            info!("blocks not exists")
+        }
+
         let db = sled::open("data/blocks")?;
         let coinbase = Transaction::new_coinbase(address, String::from("Genesis Block"))?;
         let block = Block::new_genesis_block(coinbase);
@@ -35,88 +41,86 @@ impl Blockchain {
         Ok(Blockchain{db, current_hash: block.get_hash()})
     }
 
-    pub fn add_block(&mut self, data: Vec<Transaction>) -> Result<()>{
-        let value = self.db.get("LAST")?.unwrap();
-        let current_hash = String::from_utf8(value.to_vec())?;
-        if let Some(value) = self.db.get(&current_hash)? {
-            let block = bincode::deserialize::<Block>(&value)?;
-            let new_block = Block::new_block(data, current_hash.clone(), block.get_height()+1)?;
-            self.db.insert(new_block.get_hash(), bincode::serialize(&new_block)?)?;
-            self.db.insert("LAST", new_block.get_hash().as_bytes())?;
-            self.current_hash = new_block.get_hash();
+    pub fn add_block(&mut self, data: Vec<Transaction>) -> Result<Block>{
+        // verify transaction first
+        for tx in &data {
+            if !self.verify_transaction(tx)? {
+                return Err(format_err!("ERROR: Invalid transaction"));
+            }
         }
 
-        Ok(())
+        let value = self.db.get("LAST")?.unwrap();
+        let current_hash = String::from_utf8(value.to_vec())?;
+        let value = self.db.get(&current_hash)?.unwrap();
+        let block = bincode::deserialize::<Block>(&value)?;
+
+        let new_block = Block::new_block(data, current_hash.clone(), block.get_height()+1)?;
+        self.db.insert(new_block.get_hash(), bincode::serialize(&new_block)?)?;
+        self.db.insert("LAST", new_block.get_hash().as_bytes())?;
+        self.current_hash = new_block.get_hash();
+
+        Ok(new_block)
     }
 
-    pub fn find_utxo(&self, address:&[u8]) -> Vec<TxOutput> {
-        // store id+index of all spent txoutput
-        let mut spent_ids = HashMap::<String,Vec<i32>>::new();
-        let mut utxos = Vec::<TxOutput>::new();
+    pub fn find_all_utxos(&self) -> HashMap<String,TxOutputs> {
+        let mut utxos = HashMap::new();
+        let mut spent_utxos = HashMap::<String,Vec<i32>>::new();
+
         for block in self.iter() {
-            for transaction in block.get_transactions() {
-                for (idx,tout) in transaction.vout.iter().enumerate() {
-                    if !tout.can_be_unlock_with(address) {
-                        continue;
-                    }
-                    if !spent_ids.contains_key(&transaction.id)
-                        || !spent_ids[&transaction.id].contains(&(idx as i32)) {
-                        utxos.push(tout.clone());
+            for tx in block.get_transactions() {
+                for (idx,item) in tx.vout.iter().enumerate() {
+                    if !spent_utxos.contains_key(&tx.id) || !spent_utxos[&tx.id].contains(&(idx as i32)){
+                        utxos.insert(tx.id.clone(), TxOutputs{
+                            outputs: vec![item.clone()],
+                        });
                     }
                 }
 
-                if transaction.is_coinbase() {
+                if tx.is_coinbase() {
                     continue;
                 }
-                for tin in &transaction.vin {
-                    match spent_ids.get_mut(&tin.txid) {
+                for tin in &tx.vin {
+                    match spent_utxos.get_mut(&tin.txid) {
                         Some(ids) => ids.push(tin.vout),
-                        None => { spent_ids.insert(tin.txid.clone(),vec![tin.vout]); }
+                        None => { spent_utxos.insert(tin.txid.clone(),vec![tin.vout]); }
                     }
                 }
             }
         }
-        dbg!(&spent_ids);
+
         utxos
     }
 
-    pub fn find_spendable_outputs(&self, address:&[u8], amount:i32) -> (i32,HashMap<String, Vec<i32>>) {
-        let mut accum = 0;
-        let mut spent_map = HashMap::<String,Vec<i32>>::new();
-        let mut utxos = HashMap::<String,Vec<i32>>::new();
-        for block in self.iter() {
-            for transaction in block.get_transactions() {
-                for (idx,tout) in transaction.vout.iter().enumerate() {
-                    if !tout.can_be_unlock_with(address) {
-                        continue;
-                    }
-                    if !spent_map.contains_key(&transaction.id) || !spent_map[&transaction.id].contains(&(idx as i32)) {
-                        utxos.insert(transaction.id.clone(), vec![idx as i32]);
-                        accum += tout.get_value();
-                        if accum >= amount {
-                            return (accum,utxos);
-                        }
-                    }
-                }
-
-                if transaction.is_coinbase() {
-                    continue;
-                }
-                for tin in &transaction.vin {
-                    if !tin.can_be_unlock_output_with(address) {
-                        continue;
-                    }
-                    match spent_map.get_mut(&transaction.id) {
-                        Some(val) => val.push(tin.vout),
-                        None => {
-                            spent_map.insert(transaction.id.clone(), vec![tin.vout]);
-                        }
-                    }
-                }
-            }
-        }
-        (accum, spent_map)
-    }
+    // find utxo by iterating the blockchain
+    // pub fn find_utxo(&self, address:&[u8]) -> Vec<TxOutput> {
+    //     let mut spent_ids = HashMap::<String,Vec<i32>>::new();
+    //     let mut utxos = Vec::<TxOutput>::new();
+    //     for block in self.iter() {
+    //         for transaction in block.get_transactions() {
+    //             for (idx,tout) in transaction.vout.iter().enumerate() {
+    //                 if !tout.can_be_unlock_with(address) {
+    //                     continue;
+    //                 }
+    //                 if !spent_ids.contains_key(&transaction.id)
+    //                     || !spent_ids[&transaction.id].contains(&(idx as i32)) {
+    //                     utxos.push(tout.clone());
+    //                 }
+    //             }
+    //
+    //             if transaction.is_coinbase() {
+    //                 continue;
+    //             }
+    //             for tin in &transaction.vin {
+    //                 match spent_ids.get_mut(&tin.txid) {
+    //                     Some(ids) => ids.push(tin.vout),
+    //                     None => { spent_ids.insert(tin.txid.clone(),vec![tin.vout]); }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     dbg!(&spent_ids);
+    //     utxos
+    // }
 
     pub fn iter(&self) -> BlockChainIterator {
         BlockChainIterator {
